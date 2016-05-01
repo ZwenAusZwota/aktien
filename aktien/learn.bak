@@ -1,0 +1,109 @@
+#/usr/bin/python
+# -*- coding: utf-8 -*-
+import datetime 
+import json
+import os.path
+from pybrain.tools.shortcuts import buildNetwork
+from pybrain.structure import *
+from pybrain.datasets import SupervisedDataSet
+from pybrain.supervised.trainers import BackpropTrainer
+from pybrain.tools.xml.networkwriter import NetworkWriter
+from pybrain.tools.xml.networkreader import NetworkReader
+from yahoo_finance import Share
+#in der DB bereits die Aktionen mit Datum hinterlegen 
+#dazu eingabemaske: Symbol, Datum, Aktion 
+#gespeichert werden soll so: 
+#angegebener Tag: Symbol, Datum, Aktionshinweis 
+#Folgetag 1: Symbol, Datum+1, Aktion 
+#Folgetag 2: Symbol, Datum+2, Aktion 
+
+#lernen Mittels rekkurentem Netzwerk 
+#Eingabe: Wochentag, Schlußkurs 
+#Ausgabe: InfoKauf, Kauf, Verkauf 
+
+#Netzwerk zusammenbauen oder laden
+net = buildNetwork(3,6,3, hiddenclass=SigmoidLayer,outclass=LinearLayer, bias=True, outputbias=False, recurrent=True)
+#net = NetworkReader.readFrom('network.xml')
+ds = SupervisedDataSet(3, 3)
+
+#zuerst die Symbol-Datei lesen
+
+train_file = 'ALV.DE.train'
+data_file = 'ALV.DE.data'
+set_file = 'ALV.DE'
+
+#dann die einzelnen Symbol-Dateien laden
+with open(train_file, 'r') as f:
+ train_data = json.load(f)
+
+if os.path.exists(data_file):
+ with open(data_file,'r') as f:
+  data = json.load(f)
+else:
+ #finanzdaten laden, feld umkehren
+ yahoo = Share('ALV.DE')
+ #yahoo.get_price() 
+ #yahoo.get_trade_datetime() 
+ from_date = '2000-01-01'
+ to_date = '2015-12-31'
+ data = yahoo.get_historical(from_date, to_date)
+ data.reverse()
+ if (len(data)>0):
+   with open(data_file, 'w') as fp:
+    json.dump(data, fp)
+
+#min/max berechnen
+if(os.path.exists(set_file)):
+ with open(set_file,'r') as f:
+  settings = json.load(f)
+else:
+ maxc = 0.0
+ minc = 100000.0
+ maxv = 0.0
+ minv = 99999999.0
+ for line in data:
+  c = float(line['Close'])
+  v = float(line['Volume'])
+  maxc = max(maxc, c)
+  minc = min(minc, c)
+  maxv = max(maxv, v)
+  minv = min(minv, v)
+ settings = {"maxc":maxc,"minc":minc,"maxv":maxv,"minv":minv}
+ with open(set_file, 'w') as fp:
+  json.dump(settings, fp)
+
+for line in data:
+ date = line['Date']
+ wd = datetime.datetime.strptime(date,"%Y-%m-%d").weekday()
+ op = (0,0,0)
+ cl = float(line['Close'])/(settings['maxc']*2.0)
+ vol = float(line['Volume'])/(settings['maxv']*2.0)
+ if train_data.has_key(date):
+  action = train_data[date]
+  if(action=='IK'):
+   op = (1,0,0)
+  elif(action=='K'):
+   op = (0,1,0)
+  elif(action=='V'):
+   op = (0,0,1)
+ #input berechnen
+ if vol>0.0:
+  inp = (wd/6,cl,vol)
+  ds.addSample(inp,op)
+ 
+print "Beginne Training"
+
+#ds.addSample((wd,kurs), (buy,sell)) 
+trainer = BackpropTrainer(net, ds) 
+trainer.trainEpochs(100) 
+
+print net
+
+#echtdaten 
+#ts = UnsupervisedDataSet(2,) 
+#tS.addSample((wd,kurs),) 
+#[ int(round(i)) for i in net.activateOnDataset(ts)[0]] 
+
+#speichern und laden 
+NetworkWriter.writeToFile(net, 'network.xml') 
+#wenn Datei geändert, dann netzwerk neu starten! 
